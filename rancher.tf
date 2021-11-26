@@ -2,31 +2,22 @@ variable "rancher_token" {}
 
 resource "hcloud_server" "rancher" {
   name        = "rancher.lazyfrosch.de"
-  image       = "debian-10"
+  image       = "debian-11"
+  location    = "fsn1"
   server_type = "cx21"
   ssh_keys    = [data.hcloud_ssh_key.markus.id]
-  user_data   = <<EOT
-#!/bin/bash
 
-set -ex
+  lifecycle {
+    ignore_changes = [
+      user_data,
+    ]
+  }
 
-apt-get update
-apt-get install -y curl gnupg ca-certificates
-
-curl -sfL https://get.rancher.io | sh -
-
-mkdir -p /etc/rancher/rke2
-
-cat >/etc/rancher/rke2/config.yaml <<EOF
-token: ${var.rancher_token}
-tls-san:
-  - rancher.lazyfrosch.de
-EOF
-
-systemctl enable --now rancherd-server.service
-
-echo 'export KUBECONFIG=/etc/rancher/rke2/rke2.yaml PATH="$PATH":/var/lib/rancher/rke2/bin' >> /root/.profile
-EOT
+  user_data = templatefile("rancher.user-data.yml", {
+    rancher_token     = var.rancher_token,
+    cluster_fqdn      = "rancher.lazyfrosch.de",
+    letsencrypt_email = "info@lazyfrosch.de",
+  })
 }
 
 resource "hetznerdns_record" "rancher_lazyfrosch" {
@@ -37,8 +28,16 @@ resource "hetznerdns_record" "rancher_lazyfrosch" {
   ttl     = 300
 }
 
+resource "hetznerdns_record" "rancher_lazyfrosch6" {
+  zone_id = data.hetznerdns_zone.lazyfrosch.id
+  name    = "rancher" # rancher.lazyfrosch.de
+  value   = hcloud_server.rancher.ipv6_address
+  type    = "AAAA"
+  ttl     = 300
+}
+
 resource "hcloud_rdns" "rancher" {
-  server_id = hcloud_server.rancher.id
+  server_id  = hcloud_server.rancher.id
   ip_address = hcloud_server.rancher.ipv4_address
-  dns_ptr = "rancher.lazyfrosch.de"
+  dns_ptr    = "rancher.lazyfrosch.de"
 }

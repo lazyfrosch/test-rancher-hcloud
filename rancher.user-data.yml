@@ -1,0 +1,74 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - gnupg
+  - ca-certificates
+  - vim
+
+write_files:
+  - path: /etc/rancher/rke2/config.yaml
+    content: |
+      token: ${rancher_token}
+      tls-san:
+        - ${cluster_fqdn}
+
+  - path: /var/lib/rancher/rke2/server/manifests/rke2-ingress-nginx-ds.yml
+    content: |
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChartConfig
+      metadata:
+        name: rke2-ingress-nginx
+        namespace: kube-system
+      spec:
+        valuesContent: |-
+          controller:
+            kind: DaemonSet
+            daemonset:
+              useHostPort: true
+
+runcmd:
+  - set -ex
+
+  # Install RKE2
+  # https://rancher.com/docs/rancher/v2.5/en/installation/resources/k8s-tutorials/ha-rke2/
+  - curl -sfL https://get.rke2.io | sh -
+  - systemctl enable rke2-server.service
+  - systemctl start rke2-server.service
+
+  - export KUBECONFIG=/etc/rancher/rke2/rke2.yaml PATH=$PATH:/var/lib/rancher/rke2/bin
+  - kubectl get nodes
+
+  - echo 'export KUBECONFIG=/etc/rancher/rke2/rke2.yaml PATH="$PATH":/var/lib/rancher/rke2/bin' >>/root/.bashrc
+
+  # Install helm
+  - curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+  # Install cert-manager
+  # https://cert-manager.io/v0.13-docs/installation/kubernetes/
+  - kubectl apply -f https://github.com/jetstack/cert-manager/releases/download/v1.5.1/cert-manager.crds.yaml
+  - kubectl create namespace cert-manager
+  - helm repo add jetstack https://charts.jetstack.io
+  - helm repo update
+  - helm install cert-manager jetstack/cert-manager --namespace cert-manager --version v1.5.1
+
+  # Install rancher
+  - helm repo add rancher-latest https://releases.rancher.com/server-charts/latest
+  - kubectl create namespace cattle-system
+  - |
+    helm install rancher rancher-latest/rancher \
+      --namespace cattle-system \
+      --set hostname=${cluster_fqdn} \
+      --set replicas=1 \
+      --set ingress.tls.source=letsEncrypt \
+      --set letsEncrypt.email=${letsencrypt_email}
+
+  - kubectl -n cattle-system rollout status deploy/rancher
+
+  - |
+    kubectl get secret \
+      --namespace cattle-system bootstrap-secret \
+      -o go-template='{{ .data.bootstrapPassword|base64decode }}{{ "\n" }}' \
+      >/root/rancher-bootstrap-password
